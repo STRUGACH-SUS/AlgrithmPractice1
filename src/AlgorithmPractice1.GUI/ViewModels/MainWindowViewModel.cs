@@ -14,6 +14,7 @@ public partial class MainWindowViewModel : ViewModelBase
     public ExperimentSetupViewModel Setup { get; }
     public ExperimentProgressViewModel Progress { get; }
     public HistoryViewModel History { get; }
+    public CallTreeViewModel CallTree { get; }
 
     [ObservableProperty]
     private int _selectedTabIndex;
@@ -27,6 +28,7 @@ public partial class MainWindowViewModel : ViewModelBase
         Setup = new ExperimentSetupViewModel();
         Progress = new ExperimentProgressViewModel();
         History = new HistoryViewModel(sessionRepository);
+        CallTree = new CallTreeViewModel();
 
         Setup.StartExperimentRequested += OnStartExperiment;
         Progress.NavigateToResultsRequested += OnNavigateToResults;
@@ -37,37 +39,56 @@ public partial class MainWindowViewModel : ViewModelBase
         await History.InitializeAsync();
     }
 
+    private readonly System.Threading.SemaphoreSlim _executionLock = new(1, 1);
+
     private void OnStartExperiment(IReadOnlyList<ExperimentRequest> requests, string? label)
     {
-        // Переключаемся на вкладку прогресса
+        // Создаем карточку пакета в списке прогресса и переключаемся на вкладку
+        var batchVm = Progress.AddBatch(label, requests);
         SelectedTabIndex = 1;
-        Progress.Reset(requests.Count);
 
-        // Запуск длительной операции в фоне
+        // Последовательное выполнение пакетов в фоне через семафор
         Task.Run(async () =>
         {
-            var progressHandler = new Progress<SessionProgressUpdate>(update =>
-            {
-                Dispatcher.UIThread.Post(() => Progress.UpdateProgress(update));
-            });
-
+            await _executionLock.WaitAsync();
             try
             {
+                Dispatcher.UIThread.Post(() => batchVm.MarkStarted());
+
+                var progressHandler = new Progress<SessionProgressUpdate>(update =>
+                {
+                    Dispatcher.UIThread.Post(() => batchVm.UpdateProgress(update));
+                });
+
                 var session = await _experimentRunner.RunBatchAsync(requests, label, progressHandler);
 
-                // После завершения обновляем вкладку истории
                 await Dispatcher.UIThread.InvokeAsync(async () =>
                 {
+                    batchVm.MarkCompleted();
                     await History.LoadSessionsAsync();
+
+                    var recursiveAlgs = requests
+                        .Where(r => r.Algorithm.IsRecursive)
+                        .Select(r => r.Algorithm)
+                        .Distinct()
+                        .ToList();
+
+                    if (recursiveAlgs.Count > 0)
+                    {
+                        CallTree.RegisterCompletedBatch(label ?? $"Пакет #{batchVm.BatchId}", recursiveAlgs);
+                    }
                 });
             }
             catch (Exception ex)
             {
                 Dispatcher.UIThread.Post(() =>
                 {
-                    Progress.StatusSummary = $"Ошибка при выполнении: {ex.Message}";
-                    Progress.IsRunning = false;
+                    batchVm.MarkFailed(ex.Message);
                 });
+            }
+            finally
+            {
+                _executionLock.Release();
             }
         });
     }

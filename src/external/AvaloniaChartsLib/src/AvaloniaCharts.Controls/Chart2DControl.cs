@@ -224,7 +224,12 @@ public class Chart2DControl : Control
         if (!string.IsNullOrEmpty(_params.YLabel))
         {
             var yLabelText = CreateText(_params.YLabel, 12, FontWeight.Bold, Brushes.Black);
-            context.DrawText(yLabelText, new Point(10, plotRect.Top + plotRect.Height / 2 - yLabelText.Height / 2));
+            double cx = 18;
+            double cy = plotRect.Top + plotRect.Height / 2;
+            using (context.PushTransform(Matrix.CreateRotation(-Math.PI / 2) * Matrix.CreateTranslation(cx, cy)))
+            {
+                context.DrawText(yLabelText, new Point(-yLabelText.Width / 2, -yLabelText.Height / 2));
+            }
         }
 
         // Отрисовка линий графиков
@@ -335,10 +340,19 @@ public class Chart2DControl : Control
             foreground);
     }
 
-    private static string FormatNumber(double val)
+    public static string FormatNumber(double val)
     {
         if (Math.Abs(val) < 1e-9) return "0";
-        if (Math.Abs(val) >= 10000 || Math.Abs(val) < 0.01) return val.ToString("E2", CultureInfo.InvariantCulture);
-        return val.ToString("G5", CultureInfo.InvariantCulture);
+
+        // Экспоненциальная запись только для астрономических (>= 1e12) или сверхмалых (< 1e-4) величин
+        if (Math.Abs(val) >= 1e12 || (Math.Abs(val) < 1e-4 && Math.Abs(val) > 0))
+            return val.ToString("E2", CultureInfo.InvariantCulture);
+
+        // Для целых чисел (характерно для n, m, шагов) выводим десятичное число без нулей после запятой
+        if (Math.Abs(val - Math.Round(val)) < 1e-6)
+            return Math.Round(val).ToString("F0", CultureInfo.InvariantCulture);
+
+        // Для дробных величин выводим до 3 знаков без лишних замыкающих нулей
+        return val.ToString("0.###", CultureInfo.InvariantCulture);
     }
 }
